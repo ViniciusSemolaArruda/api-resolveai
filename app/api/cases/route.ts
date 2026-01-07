@@ -1,8 +1,8 @@
 // app/api/cases/route.ts
 import { NextResponse } from "next/server"
 import {  Prisma } from "@prisma/client"
-import { prisma } from "../../../lib/prisma"
-import { verifyToken } from "../../../lib/auth"
+import { prisma } from "lib/prisma"
+import { verifyToken } from "lib/auth"
 
 export const runtime = "nodejs"
 

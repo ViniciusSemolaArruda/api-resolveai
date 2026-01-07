@@ -3,29 +3,26 @@ import { PrismaClient } from "@prisma/client"
 import { PrismaNeon } from "@prisma/adapter-neon"
 import { neonConfig } from "@neondatabase/serverless"
 
-// ✅ Neon Serverless: use fetch/HTTP (evita websocket)
+// ✅ Vercel-friendly (evita websocket)
 neonConfig.poolQueryViaFetch = true
 
-const connectionString = process.env.DATABASE_URL
-if (!connectionString) {
+const DATABASE_URL = process.env.DATABASE_URL
+if (!DATABASE_URL) {
   throw new Error("DATABASE_URL não definido no ambiente")
 }
 
-// ✅ Singleton no dev (evita várias conexões no hot-reload)
+// ✅ Adapter espera PoolConfig (connectionString) nesse seu setup
+const adapter = new PrismaNeon({ connectionString: DATABASE_URL })
+
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient
 }
-
-const adapter = new PrismaNeon({ connectionString })
 
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
     adapter,
-    // log: ["query", "info", "warn", "error"], // se quiser debug
     log: ["warn", "error"],
   })
 
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma
-}
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma

@@ -61,20 +61,11 @@ function getErrorInfo(err: unknown): { message?: string; code?: string } {
   return {}
 }
 
-/**
- * ✅ GET /api/cases
- * - Admin only (lista tudo)
- */
 export async function GET(req: Request) {
   try {
     const user = await getAuthUser(req)
-    if (!user) {
-      return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
-    }
-
-    if (user.role !== "ADMIN") {
-      return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
-    }
+    if (!user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+    if (user.role !== "ADMIN") return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
 
     const items = await prisma.case.findMany({
       orderBy: { createdAt: "desc" },
@@ -92,16 +83,10 @@ export async function GET(req: Request) {
   }
 }
 
-/**
- * ✅ POST /api/cases
- * - Cria ocorrência do usuário logado (userId obrigatório)
- */
 export async function POST(req: Request) {
   try {
     const user = await getAuthUser(req)
-    if (!user) {
-      return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
-    }
+    if (!user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
 
     const body: unknown = await req.json()
     const b = (body ?? {}) as Record<string, unknown>
@@ -134,10 +119,7 @@ export async function POST(req: Request) {
         address,
         latitude: toDecimal(b.latitude),
         longitude: toDecimal(b.longitude),
-
-        // ✅ dono
         userId: user.id,
-
         ...(photoUrl ? { photos: { create: { url: photoUrl, kind: "REPORT" } } } : {}),
       },
       include: {

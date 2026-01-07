@@ -1,6 +1,7 @@
 // app/api/cases/route.ts
 import { NextResponse } from "next/server"
-import {  Prisma } from "@prisma/client"
+import Decimal from "decimal.js"
+
 import { prisma } from "lib/prisma"
 import { verifyToken } from "lib/auth"
 
@@ -21,7 +22,7 @@ function toDecimal(v: unknown) {
   if (v === null || v === undefined || v === "") return undefined
   const n = typeof v === "string" ? Number(v.trim().replace(",", ".")) : Number(v)
   if (!Number.isFinite(n)) return undefined
-  return new Prisma.Decimal(n)
+  return new Decimal(n)
 }
 
 function getBearerToken(req: Request): string | null {

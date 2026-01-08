@@ -33,36 +33,43 @@ export default function AdminAuthClient() {
   const [error, setError] = useState<string | null>(null)
 
   async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
-    setLoading(true)
+  e.preventDefault()
+  setError(null)
+  setLoading(true)
 
-    try {
-      const res = await fetch("/api/admin/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      })
+  try {
+    const res = await fetch("/api/admin/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+      credentials: "same-origin", // ✅ garante cookie no same-site
+      cache: "no-store",
+    })
 
-      const data = await res.json()
-      if (!res.ok) throw new Error(data?.error || "Erro ao entrar")
+    const data = await res.json()
+    if (!res.ok) throw new Error(data?.error || "Erro ao entrar")
 
-      if (data?.token) {
-        localStorage.setItem("token", data.token)
-        localStorage.setItem("accessToken", data.token)
-      }
-
-      if (data?.user) {
-        localStorage.setItem("admin_user", JSON.stringify(data.user))
-      }
-
-      router.replace(next) // ✅ agora vai pra "/" por padrão
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Erro inesperado")
-    } finally {
-      setLoading(false)
+    if (data?.token) {
+      localStorage.setItem("token", data.token)
+      localStorage.setItem("accessToken", data.token)
     }
+
+    if (data?.user) {
+      localStorage.setItem("admin_user", JSON.stringify(data.user))
+    }
+
+    // ✅ dá 1 tick pro browser aplicar Set-Cookie antes de navegar
+    await new Promise((r) => setTimeout(r, 50))
+
+    router.replace(next)
+    router.refresh() // ✅ ajuda em páginas server
+  } catch (err: unknown) {
+    setError(err instanceof Error ? err.message : "Erro inesperado")
+  } finally {
+    setLoading(false)
   }
+}
+
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-zinc-100">

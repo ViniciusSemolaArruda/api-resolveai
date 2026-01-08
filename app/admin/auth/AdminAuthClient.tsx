@@ -8,7 +8,6 @@ export default function AdminAuthClient() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
-  // ✅ depois do login vai pro dashboard
   const next = searchParams.get("next") || "/admin"
 
   const [email, setEmail] = useState("")
@@ -31,13 +30,11 @@ export default function AdminAuthClient() {
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || "Erro ao entrar")
 
-      // ✅ salva token pro painel consumir APIs com Bearer
       if (data?.token) {
         localStorage.setItem("token", data.token)
         localStorage.setItem("accessToken", data.token)
       }
 
-      // ✅ salva user (opcional)
       if (data?.user) {
         localStorage.setItem("admin_user", JSON.stringify(data.user))
       }

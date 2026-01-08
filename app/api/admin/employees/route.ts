@@ -1,3 +1,4 @@
+//app\api\admin\employees\route.ts
 import { NextResponse } from "next/server"
 import { prisma } from "lib/prisma"
 import { EmployeeRole } from "@prisma/client"

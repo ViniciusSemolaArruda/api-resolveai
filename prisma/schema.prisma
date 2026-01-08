@@ -34,6 +34,15 @@ enum CaseCategory {
   OUTROS
 }
 
+enum EmployeeRole {
+  ILUMINACAO_PUBLICA
+  BURACO_NA_VIA
+  COLETA_DE_LIXO
+  OBSTRUCAO_DE_CALCADA
+  VAZAMENTO_DE_AGUA
+  OUTROS
+}
+
 enum CasePhotoKind {
   REPORT
   UPDATE
@@ -60,6 +69,31 @@ model User {
 
   @@index([role, createdAt])
 }
+
+model Employee {
+  id           String        @id @default(cuid())
+
+  // IP / código gerado automaticamente
+  employeeCode Int           @unique
+
+  name         String
+  cpf          String        @unique
+
+  role         EmployeeRole
+
+  passwordHash String
+
+  isActive     Boolean       @default(true)
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  caseEvents   CaseEvent[]   @relation("EmployeeCaseEvents")
+
+  @@index([employeeCode])
+  @@index([role])
+}
+
 
 model Case {
   id          String       @id @default(cuid())
@@ -108,8 +142,13 @@ model CaseEvent {
   caseId String
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
+  // Usuário comum (cidadão / admin)
   authorId String?
   author   User? @relation("UserCaseEvents", fields: [authorId], references: [id], onDelete: SetNull)
+
+  // Funcionário
+  employeeId String?
+  employee   Employee? @relation("EmployeeCaseEvents", fields: [employeeId], references: [id], onDelete: SetNull)
 
   status   CaseStatus
   message  String?
@@ -119,4 +158,6 @@ model CaseEvent {
 
   @@index([caseId, createdAt])
   @@index([authorId, createdAt])
+  @@index([employeeId, createdAt])
 }
+

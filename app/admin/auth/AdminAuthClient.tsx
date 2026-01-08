@@ -2,13 +2,30 @@
 "use client"
 
 import { useRouter, useSearchParams } from "next/navigation"
-import { useState } from "react"
+import { useMemo, useState } from "react"
+
+function sanitizeNext(next: string | null) {
+  // ✅ dashboard é "/"
+  const fallback = "/"
+
+  const raw = (next ?? "").trim()
+  if (!raw) return fallback
+
+  // ✅ só aceita rotas internas
+  if (!raw.startsWith("/")) return fallback
+  if (raw.startsWith("//")) return fallback
+
+  // ✅ evita mandar pra rota inexistente antiga
+  if (raw === "/cases" || raw.startsWith("/cases/")) return "/admin/cases"
+
+  return raw
+}
 
 export default function AdminAuthClient() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
-  const next = searchParams.get("next") || "/admin"
+  const next = useMemo(() => sanitizeNext(searchParams.get("next")), [searchParams])
 
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -39,7 +56,7 @@ export default function AdminAuthClient() {
         localStorage.setItem("admin_user", JSON.stringify(data.user))
       }
 
-      router.replace(next)
+      router.replace(next) // ✅ agora vai pra "/" por padrão
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Erro inesperado")
     } finally {

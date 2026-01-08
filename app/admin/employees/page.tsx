@@ -1,3 +1,4 @@
+//app\admin\employees\page.tsx
 import Header from "app/components/Header"
 import { prisma } from "lib/prisma"
 import EmployeeTable from "./EmployeeTable"
@@ -16,12 +17,15 @@ function roleLabel(role: string) {
   return map[role] ?? role
 }
 
+type SearchParams = Promise<{ q?: string }>
+
 export default async function EmployeesPage({
   searchParams,
 }: {
-  searchParams?: { q?: string }
+  searchParams?: SearchParams
 }) {
-  const q = (searchParams?.q ?? "").trim()
+  const sp = (await searchParams) ?? {}
+  const q = String(sp.q ?? "").trim()
 
   const employees = await prisma.employee.findMany({
     where: q
@@ -29,9 +33,7 @@ export default async function EmployeesPage({
           OR: [
             { name: { contains: q, mode: "insensitive" } },
             { cpf: { contains: q } },
-            ...(Number.isFinite(Number(q))
-              ? [{ employeeCode: Number(q) }]
-              : []),
+            ...(Number.isFinite(Number(q)) ? [{ employeeCode: Number(q) }] : []),
           ],
         }
       : undefined,
@@ -79,11 +81,7 @@ export default async function EmployeesPage({
           </div>
 
           {/* Busca */}
-          <form
-            className="mb-4 flex gap-2"
-            action="/admin/employees"
-            method="GET"
-          >
+          <form className="mb-4 flex gap-2" action="/admin/employees" method="GET">
             <input
               name="q"
               defaultValue={q}

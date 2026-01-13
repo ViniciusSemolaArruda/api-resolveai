@@ -1,9 +1,43 @@
+// app/api/cases/[id]/route.ts
 import { NextResponse } from "next/server"
 import { prisma } from "../../../../lib/prisma"
-import { verifyToken } from "../../../../lib/auth"
+import { verifyToken, type EmployeeRole, type JwtRole } from "../../../../lib/auth"
 
 export const runtime = "nodejs"
 
+/* =========================
+   Categorias permitidas
+========================= */
+const ALLOWED_CATEGORIES = [
+  "ILUMINACAO_PUBLICA",
+  "BURACO_NA_VIA",
+  "COLETA_DE_LIXO",
+  "OBSTRUCAO_DE_CALCADA",
+  "VAZAMENTO_DE_AGUA",
+  "OUTROS",
+] as const
+
+type AllowedCategory = (typeof ALLOWED_CATEGORIES)[number]
+
+/* =========================
+   Mapa cargo -> categorias
+   (igual ao /api/cases)
+========================= */
+const EMPLOYEE_PERMS: Record<EmployeeRole, AllowedCategory[]> = {
+  ILUMINACAO: ["ILUMINACAO_PUBLICA"],
+  BURACOS: ["BURACO_NA_VIA"],
+  LIXO: ["COLETA_DE_LIXO"],
+
+  // exemplo: fiscal pega várias
+  FISCALIZACAO: ["OBSTRUCAO_DE_CALCADA", "VAZAMENTO_DE_AGUA", "OUTROS"],
+
+  // se alguém tiver employeeRole ADMIN por algum motivo, deixa ver tudo
+  ADMIN: [...ALLOWED_CATEGORIES],
+}
+
+/* =========================
+   Helpers
+========================= */
 function getBearerToken(req: Request): string | null {
   const h = req.headers.get("authorization") || req.headers.get("Authorization") || ""
   const m = h.match(/^Bearer\s+(.+)$/i)
@@ -15,12 +49,26 @@ async function getAuthUser(req: Request) {
   if (!token) return null
 
   try {
-    const { userId } = await verifyToken(token)
+    // ✅ pega role e employeeRole do token (como no /api/cases)
+    const { userId, role, employeeRole } = await verifyToken(token)
 
-    return prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, role: true, email: true, name: true },
+      select: {
+        id: true,
+        role: true,
+        email: true,
+        name: true,
+      },
     })
+
+    if (!user) return null
+
+    return {
+      id: user.id,
+      role: (user.role as JwtRole) ?? (role as JwtRole),
+      employeeRole: (employeeRole ?? null) as EmployeeRole | null,
+    }
   } catch (err) {
     console.error("verifyToken error:", err)
     return null
@@ -29,19 +77,18 @@ async function getAuthUser(req: Request) {
 
 /**
  * ✅ GET /api/cases/[id]
- * - Dono do caso ou ADMIN
+ * - DONO do caso (USER)
+ * - ADMIN (tudo)
+ * - EMPLOYEE (somente se categoria do case estiver no cargo)
  */
-export async function GET(
-  req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
+export async function GET(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const user = await getAuthUser(req)
     if (!user) {
       return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
     }
 
-    // 🔥 NEXT 16 → params É PROMISE
+    // 🔥 NEXT 16 → params é Promise
     const { id } = await context.params
     const caseId = id?.trim()
 
@@ -62,11 +109,16 @@ export async function GET(
       return NextResponse.json({ error: "Ocorrência não encontrada" }, { status: 404 })
     }
 
-    // ✅ autorização
+    // ✅ autorização: dono / admin / employee permitido
     const isOwner = found.userId === user.id
     const isAdmin = user.role === "ADMIN"
 
-    if (!isOwner && !isAdmin) {
+    const isEmployeeAllowed =
+      user.role === "EMPLOYEE" &&
+      !!user.employeeRole &&
+      (EMPLOYEE_PERMS[user.employeeRole] ?? []).includes(found.category as AllowedCategory)
+
+    if (!isOwner && !isAdmin && !isEmployeeAllowed) {
       return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
     }
 

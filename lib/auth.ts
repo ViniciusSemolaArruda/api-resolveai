@@ -64,7 +64,7 @@ export async function signUserToken(user: {
     employeeRole: user.employeeRole ?? null,
   })
     .setProtectedHeader({ alg: "HS256" })
-    .setSubject(user.id) // ✅ sub correto
+    .setSubject(user.id)
     .setIssuedAt()
     .setExpirationTime("30d")
     .sign(getJwtSecretKey())
@@ -93,7 +93,8 @@ export async function getAuthUser(req: Request): Promise<AuthUser | null> {
   if (!token) return null
 
   try {
-    const { userId } = await verifyToken(token)
+    // ✅ pega role e employeeRole do token
+    const { userId, role: tokenRole, employeeRole } = await verifyToken(token)
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -102,7 +103,7 @@ export async function getAuthUser(req: Request): Promise<AuthUser | null> {
         name: true,
         email: true,
         role: true,
-        // ✅ se você tiver no schema, descomenta e ajusta o nome:
+        // ✅ se você tiver employeeRole no schema, pode adicionar aqui:
         // employeeRole: true,
       },
     })
@@ -113,8 +114,12 @@ export async function getAuthUser(req: Request): Promise<AuthUser | null> {
       id: user.id,
       name: user.name ?? null,
       email: user.email,
-      role: user.role as JwtRole,
-      employeeRole: null, // 👈 troque para user.employeeRole se existir no schema
+      // ✅ mantém o que já funciona: role do DB, com fallback do token
+      role: ((user.role as JwtRole) ?? tokenRole) as JwtRole,
+      // ✅ IMPORTANTÍSSIMO: funcionário precisa disso pra filtrar permissões
+      employeeRole: employeeRole ?? null,
+      // se tiver no schema e quiser priorizar DB:
+      // employeeRole: (user.employeeRole as EmployeeRole) ?? employeeRole ?? null,
     }
   } catch (err) {
     console.error("getAuthUser failed:", err)

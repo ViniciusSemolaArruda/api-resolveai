@@ -1,4 +1,3 @@
-// app/api/cloudinary/signature/route.ts
 import crypto from "crypto"
 import { NextResponse } from "next/server"
 import { prisma } from "../../../../lib/prisma"
@@ -15,10 +14,10 @@ function getBearerToken(req: Request): string | null {
 type TokenPayload = {
   userId?: string
   employeeId?: string
+  employeeCode?: number
   role?: string
 }
 
-/** type guard */
 function isTokenPayload(v: unknown): v is TokenPayload {
   if (!v || typeof v !== "object") return false
   const o = v as Record<string, unknown>
@@ -26,8 +25,9 @@ function isTokenPayload(v: unknown): v is TokenPayload {
   const okUserId = o.userId === undefined || typeof o.userId === "string"
   const okEmpId = o.employeeId === undefined || typeof o.employeeId === "string"
   const okRole = o.role === undefined || typeof o.role === "string"
+  const okEmpCode = o.employeeCode === undefined || typeof o.employeeCode === "number"
 
-  return okUserId && okEmpId && okRole
+  return okUserId && okEmpId && okRole && okEmpCode
 }
 
 export async function GET(req: Request) {
@@ -42,34 +42,50 @@ export async function GET(req: Request) {
 
     const userId = raw.userId ?? null
     const employeeId = raw.employeeId ?? null
-    const role = (raw.role ?? "").toUpperCase()
+    const employeeCode = raw.employeeCode ?? null
 
-    // ✅ valida ator (User ou Employee)
-    let actorFolder: string
+    // ✅ resolve ator (User ou Employee)
+    let actorFolder: string | null = null
 
-    if (userId) {
+    // 1) se veio employeeId, usa direto
+    if (employeeId) {
+      const emp = await prisma.employee.findUnique({
+        where: { id: employeeId },
+        select: { id: true },
+      })
+      if (!emp) return NextResponse.json({ error: "Funcionário não encontrado" }, { status: 401 })
+      actorFolder = `employee-${emp.id}`
+    }
+
+    // 2) se veio userId, tenta User; se não existir, tenta Employee pelo mesmo id
+    if (!actorFolder && userId) {
       const user = await prisma.user.findUnique({
         where: { id: userId },
         select: { id: true },
       })
-      if (!user) return NextResponse.json({ error: "Usuário não encontrado" }, { status: 401 })
-      actorFolder = `user-${user.id}`
-    } else if (employeeId) {
-      // ✅ opcional: trava por role (se você tiver isso no token)
-      // if (role && role !== "EMPLOYEE" && role !== "ADMIN") {
-      //   return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
-      // }
 
-      // ⚠️ ajuste o model caso não seja "employee"
-      const employee = await prisma.employee.findUnique({
-        where: { id: employeeId },
+      if (user) {
+        actorFolder = `user-${user.id}`
+      } else {
+        const empById = await prisma.employee.findUnique({
+          where: { id: userId },
+          select: { id: true },
+        })
+        if (empById) actorFolder = `employee-${empById.id}`
+      }
+    }
+
+    // 3) fallback por employeeCode (sem exigir unique no schema)
+    if (!actorFolder && typeof employeeCode === "number") {
+      const empByCode = await prisma.employee.findFirst({
+        where: { employeeCode },
         select: { id: true },
       })
-      if (!employee)
-        return NextResponse.json({ error: "Funcionário não encontrado" }, { status: 401 })
-      actorFolder = `employee-${employee.id}`
-    } else {
-      return NextResponse.json({ error: "Token sem identidade (userId/employeeId)" }, { status: 401 })
+      if (empByCode) actorFolder = `employee-${empByCode.id}`
+    }
+
+    if (!actorFolder) {
+      return NextResponse.json({ error: "Usuário não encontrado" }, { status: 401 })
     }
 
     const cloudName = process.env.CLOUDINARY_CLOUD_NAME
@@ -92,8 +108,6 @@ export async function GET(req: Request) {
     }
 
     const timestamp = Math.floor(Date.now() / 1000)
-
-    // ⚠️ deve bater com o upload no app
     const paramsToSign = `folder=${folder}&timestamp=${timestamp}`
 
     const signature = crypto
@@ -101,13 +115,7 @@ export async function GET(req: Request) {
       .update(paramsToSign + apiSecret)
       .digest("hex")
 
-    return NextResponse.json({
-      cloudName,
-      apiKey,
-      timestamp,
-      folder,
-      signature,
-    })
+    return NextResponse.json({ cloudName, apiKey, timestamp, folder, signature })
   } catch (e) {
     console.error("GET /api/cloudinary/signature error:", e)
     return NextResponse.json({ error: "Erro ao gerar assinatura" }, { status: 500 })

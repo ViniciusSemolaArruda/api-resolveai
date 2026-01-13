@@ -1,8 +1,26 @@
+// app/api/cases/[id]/route.ts
 import { NextResponse } from "next/server"
 import { prisma } from "../../../../lib/prisma"
 import { verifyToken } from "../../../../lib/auth"
+import { CaseStatus } from "@prisma/client"
 
 export const runtime = "nodejs"
+
+/* ================= Types ================= */
+
+type RouteContext = { params: Promise<{ id: string }> }
+
+type JwtUserPayload = { userId: string }
+type JwtEmployeePayload = { employeeId: string }
+type JwtPayload = JwtUserPayload | JwtEmployeePayload
+
+function isEmployeePayload(p: JwtPayload): p is JwtEmployeePayload {
+  return "employeeId" in p && typeof p.employeeId === "string" && p.employeeId.length > 0
+}
+
+function isUserPayload(p: JwtPayload): p is JwtUserPayload {
+  return "userId" in p && typeof p.userId === "string" && p.userId.length > 0
+}
 
 function getBearerToken(req: Request): string | null {
   const h = req.headers.get("authorization") || req.headers.get("Authorization") || ""
@@ -15,10 +33,11 @@ async function getAuthUser(req: Request) {
   if (!token) return null
 
   try {
-    const { userId } = await verifyToken(token)
+    const payload = (await verifyToken(token)) as JwtPayload
+    if (!isUserPayload(payload)) return null
 
     return prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: payload.userId },
       select: { id: true, role: true, email: true, name: true },
     })
   } catch (err) {
@@ -27,26 +46,32 @@ async function getAuthUser(req: Request) {
   }
 }
 
+function parseStatus(input: unknown): CaseStatus | null {
+  const s = String(input ?? "").trim().toUpperCase()
+
+  if (s === "RECEBIDA") return CaseStatus.RECEBIDA
+  if (s === "EM_ANDAMENTO") return CaseStatus.EM_ANDAMENTO
+  if (s === "AGUARDANDO_ATUALIZACAO") return CaseStatus.AGUARDANDO_ATUALIZACAO
+  if (s === "CONCLUIDA") return CaseStatus.CONCLUIDA
+
+  return null
+}
+
 /**
  * ✅ GET /api/cases/[id]
  * - Dono do caso ou ADMIN
  */
-export async function GET(
-  req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
+export async function GET(req: Request, context: RouteContext) {
   try {
     const user = await getAuthUser(req)
     if (!user) {
       return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
     }
 
-    // 🔥 NEXT 16 → params É PROMISE
     const { id } = await context.params
     const caseId = id?.trim()
 
     if (!caseId) {
-      console.log("ID NÃO RECEBIDO NO BACKEND")
       return NextResponse.json({ error: "ID inválido" }, { status: 400 })
     }
 
@@ -62,7 +87,6 @@ export async function GET(
       return NextResponse.json({ error: "Ocorrência não encontrada" }, { status: 404 })
     }
 
-    // ✅ autorização
     const isOwner = found.userId === user.id
     const isAdmin = user.role === "ADMIN"
 
@@ -74,5 +98,101 @@ export async function GET(
   } catch (err) {
     console.error("GET /api/cases/[id] error:", err)
     return NextResponse.json({ error: "Erro ao buscar ocorrência" }, { status: 500 })
+  }
+}
+
+/**
+ * ✅ PATCH /api/cases/[id]
+ * - Somente FUNCIONÁRIO
+ * - Atualiza status + cria CaseEvent
+ * - Regras:
+ *   - EM_ANDAMENTO: pode message, NÃO pode photoUrl
+ *   - CONCLUIDA: photoUrl OBRIGATÓRIO
+ */
+export async function PATCH(req: Request, context: RouteContext) {
+  try {
+    const token = getBearerToken(req)
+    if (!token) {
+      return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+    }
+
+    const payload = (await verifyToken(token)) as JwtPayload
+
+    if (!isEmployeePayload(payload)) {
+      return NextResponse.json({ error: "Apenas funcionário pode atualizar" }, { status: 403 })
+    }
+
+    const employee = await prisma.employee.findUnique({
+      where: { id: payload.employeeId },
+      select: { id: true, isActive: true, role: true, name: true },
+    })
+
+    if (!employee || !employee.isActive) {
+      return NextResponse.json({ error: "Funcionário inválido/inativo" }, { status: 403 })
+    }
+
+    const { id } = await context.params
+    const caseId = id?.trim()
+    if (!caseId) {
+      return NextResponse.json({ error: "ID inválido" }, { status: 400 })
+    }
+
+    // body tipado
+    const bodyUnknown: unknown = await req.json().catch(() => ({}))
+    const body = (typeof bodyUnknown === "object" && bodyUnknown !== null ? bodyUnknown : {}) as Record<
+      string,
+      unknown
+    >
+
+    const nextStatus = parseStatus(body.status)
+    const message = typeof body.message === "string" ? body.message.trim() : null
+    const photoUrl = typeof body.photoUrl === "string" ? body.photoUrl.trim() : null
+
+    if (!nextStatus) {
+      return NextResponse.json({ error: "Status inválido" }, { status: 400 })
+    }
+
+    // ✅ regras de imagem
+    if (nextStatus === CaseStatus.EM_ANDAMENTO && photoUrl) {
+      return NextResponse.json({ error: "Imagem não permitida em andamento" }, { status: 400 })
+    }
+    if (nextStatus === CaseStatus.CONCLUIDA && !photoUrl) {
+      return NextResponse.json({ error: "Imagem obrigatória para concluir" }, { status: 400 })
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const updatedCase = await tx.case.update({
+        where: { id: caseId },
+        data: { status: nextStatus },
+      })
+
+      const event = await tx.caseEvent.create({
+        data: {
+          caseId,
+          status: nextStatus,
+          message,
+          photoUrl,
+          employeeId: employee.id,
+        },
+      })
+
+      // ✅ se concluir, salva também como foto de UPDATE
+      if (nextStatus === CaseStatus.CONCLUIDA && photoUrl) {
+        await tx.casePhoto.create({
+          data: {
+            caseId,
+            url: photoUrl,
+            kind: "UPDATE",
+          },
+        })
+      }
+
+      return { updatedCase, event }
+    })
+
+    return NextResponse.json(result, { status: 200 })
+  } catch (err) {
+    console.error("PATCH /api/cases/[id] error:", err)
+    return NextResponse.json({ error: "Erro ao atualizar ocorrência" }, { status: 500 })
   }
 }

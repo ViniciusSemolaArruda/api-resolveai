@@ -12,37 +12,72 @@ function getBearerToken(req: Request): string | null {
   return m?.[1]?.trim() ?? null
 }
 
+type TokenPayload = {
+  userId?: string
+  employeeId?: string
+  role?: string
+}
+
+/** type guard */
+function isTokenPayload(v: unknown): v is TokenPayload {
+  if (!v || typeof v !== "object") return false
+  const o = v as Record<string, unknown>
+
+  const okUserId = o.userId === undefined || typeof o.userId === "string"
+  const okEmpId = o.employeeId === undefined || typeof o.employeeId === "string"
+  const okRole = o.role === undefined || typeof o.role === "string"
+
+  return okUserId && okEmpId && okRole
+}
+
 export async function GET(req: Request) {
   try {
-    // ✅ 1) exige login
     const token = getBearerToken(req)
-    if (!token) {
-      return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
+    if (!token) return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
+
+    const raw = (await verifyToken(token)) as unknown
+    if (!isTokenPayload(raw)) {
+      return NextResponse.json({ error: "Token inválido (payload inesperado)" }, { status: 401 })
     }
 
-    // ✅ 2) valida token (retorno tipado)
-    const { userId } = await verifyToken(token)
-    if (!userId) {
-      return NextResponse.json({ error: "Token inválido" }, { status: 401 })
-    }
+    const userId = raw.userId ?? null
+    const employeeId = raw.employeeId ?? null
+    const role = (raw.role ?? "").toUpperCase()
 
-    // ✅ 3) garante que usuário existe
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true },
-    })
+    // ✅ valida ator (User ou Employee)
+    let actorFolder: string
 
-    if (!user) {
-      return NextResponse.json({ error: "Usuário não encontrado" }, { status: 401 })
+    if (userId) {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true },
+      })
+      if (!user) return NextResponse.json({ error: "Usuário não encontrado" }, { status: 401 })
+      actorFolder = `user-${user.id}`
+    } else if (employeeId) {
+      // ✅ opcional: trava por role (se você tiver isso no token)
+      // if (role && role !== "EMPLOYEE" && role !== "ADMIN") {
+      //   return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
+      // }
+
+      // ⚠️ ajuste o model caso não seja "employee"
+      const employee = await prisma.employee.findUnique({
+        where: { id: employeeId },
+        select: { id: true },
+      })
+      if (!employee)
+        return NextResponse.json({ error: "Funcionário não encontrado" }, { status: 401 })
+      actorFolder = `employee-${employee.id}`
+    } else {
+      return NextResponse.json({ error: "Token sem identidade (userId/employeeId)" }, { status: 401 })
     }
 
     const cloudName = process.env.CLOUDINARY_CLOUD_NAME
     const apiKey = process.env.CLOUDINARY_API_KEY
     const apiSecret = process.env.CLOUDINARY_API_SECRET
 
-    // ✅ folder isolado por usuário
     const baseFolder = process.env.CLOUDINARY_FOLDER || "resolve-ai/cases"
-    const folder = `${baseFolder}/${userId}`
+    const folder = `${baseFolder}/${actorFolder}`
 
     if (!cloudName || !apiKey || !apiSecret) {
       return NextResponse.json(
@@ -58,7 +93,7 @@ export async function GET(req: Request) {
 
     const timestamp = Math.floor(Date.now() / 1000)
 
-    // ⚠️ ordem e parâmetros precisam bater com o upload
+    // ⚠️ deve bater com o upload no app
     const paramsToSign = `folder=${folder}&timestamp=${timestamp}`
 
     const signature = crypto

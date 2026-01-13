@@ -31,7 +31,7 @@ function toDecimal(v: unknown) {
 /* =========================
    GET /api/cases
    ADMIN (user ADMIN): tudo
-   EMPLOYEE: filtrado por cargo
+   EMPLOYEE: filtrado por cargo (e já vem com "events" p/ mostrar IP, data, msg e foto)
    USER: 403 (mantém seu comportamento atual)
 ========================= */
 export async function GET(req: Request) {
@@ -47,6 +47,16 @@ export async function GET(req: Request) {
         include: {
           photos: { orderBy: { createdAt: "desc" }, take: 1 },
           user: { select: { id: true, name: true, email: true } },
+
+          // ✅ histórico de atualizações (quem mudou, pra qual status, quando, msg, foto)
+          events: {
+            orderBy: { createdAt: "desc" },
+            take: 10,
+            include: {
+              employee: { select: { id: true, employeeCode: true, name: true, role: true } },
+              author: { select: { id: true, name: true, email: true } },
+            },
+          },
         },
       })
       return NextResponse.json(items, { status: 200 })
@@ -66,6 +76,16 @@ export async function GET(req: Request) {
         include: {
           photos: { orderBy: { createdAt: "desc" }, take: 1 },
           user: { select: { id: true, name: true, email: true } },
+
+          // ✅ histórico de atualizações também pro funcionário
+          events: {
+            orderBy: { createdAt: "desc" },
+            take: 10,
+            include: {
+              employee: { select: { id: true, employeeCode: true, name: true, role: true } },
+              author: { select: { id: true, name: true, email: true } },
+            },
+          },
         },
       })
 
@@ -84,8 +104,7 @@ export async function GET(req: Request) {
    POST /api/cases
    (mantém como estava: qualquer logado cria)
    - USER/ADMIN cria normal (userId do user)
-   - EMPLOYEE: por padrão eu deixei BLOQUEADO (porque não faz sentido funcionário criar ocorrência)
-     Se você quiser permitir, eu mudo.
+   - EMPLOYEE: bloqueado por padrão (se quiser permitir depois, eu mudo)
 ========================= */
 export async function POST(req: Request) {
   try {
@@ -128,7 +147,10 @@ export async function POST(req: Request) {
         address,
         latitude: toDecimal(b.latitude),
         longitude: toDecimal(b.longitude),
+
+        // ✅ cidadão/admin criando -> salva dono do case
         userId: actor.id,
+
         ...(photoUrl ? { photos: { create: { url: photoUrl, kind: "REPORT" } } } : {}),
       },
       include: {

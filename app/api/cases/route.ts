@@ -1,40 +1,22 @@
 // app/api/cases/route.ts
 import { NextResponse } from "next/server"
 import Decimal from "decimal.js"
-import { prisma } from "lib/prisma"
-import { verifyToken, type JwtRole, type EmployeeRole } from "lib/auth"
+import { prisma } from "../../../lib/prisma"
+import { getAuthActor, allowedCategoriesForEmployee, type AllowedCategory } from "../../../lib/auth"
 
 export const runtime = "nodejs"
 
 /* =========================
    Categorias
 ========================= */
-const ALLOWED_CATEGORIES = [
+const ALLOWED_CATEGORIES: AllowedCategory[] = [
   "ILUMINACAO_PUBLICA",
   "BURACO_NA_VIA",
   "COLETA_DE_LIXO",
   "OBSTRUCAO_DE_CALCADA",
   "VAZAMENTO_DE_AGUA",
   "OUTROS",
-] as const
-
-type AllowedCategory = (typeof ALLOWED_CATEGORIES)[number]
-
-/* =========================
-   Mapa cargo -> categorias
-   (ajuste como quiser)
-========================= */
-const EMPLOYEE_PERMS: Record<EmployeeRole, AllowedCategory[]> = {
-  ILUMINACAO: ["ILUMINACAO_PUBLICA"],
-  BURACOS: ["BURACO_NA_VIA"],
-  LIXO: ["COLETA_DE_LIXO"],
-
-  // exemplo: fiscal pega várias
-  FISCALIZACAO: ["OBSTRUCAO_DE_CALCADA", "VAZAMENTO_DE_AGUA", "OUTROS"],
-
-  // se alguém tiver employeeRole ADMIN por algum motivo, deixa ver tudo
-  ADMIN: [...ALLOWED_CATEGORIES],
-}
+]
 
 /* =========================
    Helpers
@@ -46,68 +28,19 @@ function toDecimal(v: unknown) {
   return new Decimal(n)
 }
 
-function getBearerToken(req: Request): string | null {
-  const h = req.headers.get("authorization") || req.headers.get("Authorization") || ""
-  const m = h.match(/^Bearer\s+(.+)$/i)
-  return m?.[1]?.trim() ?? null
-}
-
-async function getAuthUser(req: Request) {
-  const token = getBearerToken(req)
-  if (!token) return null
-
-  try {
-    const { userId, role, employeeRole } = await verifyToken(token)
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        role: true,
-        email: true,
-        name: true,
-      },
-    })
-
-    if (!user) return null
-
-    return {
-      id: user.id,
-      role: (user.role as JwtRole) ?? (role as JwtRole),
-      employeeRole: (employeeRole ?? null) as EmployeeRole | null,
-      email: user.email,
-      name: user.name,
-    }
-  } catch (err) {
-    console.error("verifyToken failed:", err)
-    return null
-  }
-}
-
-function getErrorInfo(err: unknown): { message?: string; code?: string } {
-  if (err && typeof err === "object") {
-    const e = err as { message?: unknown; code?: unknown }
-    return {
-      message: typeof e.message === "string" ? e.message : undefined,
-      code: typeof e.code === "string" ? e.code : undefined,
-    }
-  }
-  return {}
-}
-
 /* =========================
    GET /api/cases
-   ADMIN: tudo
+   ADMIN (user ADMIN): tudo
    EMPLOYEE: filtrado por cargo
-   USER: 403 (como era)
+   USER: 403 (mantém seu comportamento atual)
 ========================= */
 export async function GET(req: Request) {
   try {
-    const user = await getAuthUser(req)
-    if (!user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+    const actor = await getAuthActor(req)
+    if (!actor) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
 
-    // ✅ ADMIN vê tudo (igual antes)
-    if (user.role === "ADMIN") {
+    // ✅ ADMIN (user ADMIN) vê tudo
+    if (actor.kind === "USER" && actor.role === "ADMIN") {
       const items = await prisma.case.findMany({
         orderBy: { createdAt: "desc" },
         take: 100,
@@ -116,20 +49,13 @@ export async function GET(req: Request) {
           user: { select: { id: true, name: true, email: true } },
         },
       })
-
       return NextResponse.json(items, { status: 200 })
     }
 
-    // ✅ EMPLOYEE vê só a categoria do cargo
-    if (user.role === "EMPLOYEE") {
-      const empRole = user.employeeRole
-
-      if (!empRole) {
-        return NextResponse.json({ error: "Funcionário sem cargo definido" }, { status: 403 })
-      }
-
-      const allowed = EMPLOYEE_PERMS[empRole]
-      if (!allowed || allowed.length === 0) {
+    // ✅ EMPLOYEE vê só categorias permitidas
+    if (actor.kind === "EMPLOYEE") {
+      const allowed = allowedCategoriesForEmployee(actor.employeeRole)
+      if (!allowed.length) {
         return NextResponse.json({ error: "Cargo sem permissões" }, { status: 403 })
       }
 
@@ -146,7 +72,7 @@ export async function GET(req: Request) {
       return NextResponse.json(items, { status: 200 })
     }
 
-    // ✅ USER continua sem acesso (não quebra o fluxo atual)
+    // ✅ USER continua sem acesso (não quebra o que já funciona)
     return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
   } catch (err) {
     console.error("GET /api/cases error:", err)
@@ -157,11 +83,19 @@ export async function GET(req: Request) {
 /* =========================
    POST /api/cases
    (mantém como estava: qualquer logado cria)
+   - USER/ADMIN cria normal (userId do user)
+   - EMPLOYEE: por padrão eu deixei BLOQUEADO (porque não faz sentido funcionário criar ocorrência)
+     Se você quiser permitir, eu mudo.
 ========================= */
 export async function POST(req: Request) {
   try {
-    const user = await getAuthUser(req)
-    if (!user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+    const actor = await getAuthActor(req)
+    if (!actor) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+
+    // 🔒 por padrão: employee não cria ocorrência
+    if (actor.kind === "EMPLOYEE") {
+      return NextResponse.json({ error: "Funcionário não pode criar ocorrência" }, { status: 403 })
+    }
 
     const body: unknown = await req.json()
     const b = (body ?? {}) as Record<string, unknown>
@@ -194,7 +128,7 @@ export async function POST(req: Request) {
         address,
         latitude: toDecimal(b.latitude),
         longitude: toDecimal(b.longitude),
-        userId: user.id,
+        userId: actor.id,
         ...(photoUrl ? { photos: { create: { url: photoUrl, kind: "REPORT" } } } : {}),
       },
       include: {
@@ -203,9 +137,8 @@ export async function POST(req: Request) {
     })
 
     return NextResponse.json(created, { status: 201 })
-  } catch (err: unknown) {
+  } catch (err) {
     console.error("POST /api/cases error:", err)
-    const info = getErrorInfo(err)
-    return NextResponse.json({ error: "Erro ao criar ocorrência", ...info }, { status: 500 })
+    return NextResponse.json({ error: "Erro ao criar ocorrência" }, { status: 500 })
   }
 }

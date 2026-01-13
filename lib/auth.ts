@@ -1,23 +1,38 @@
 // lib/auth.ts
 import { jwtVerify, SignJWT } from "jose"
 import { prisma } from "./prisma"
+import type { EmployeeRole } from "@prisma/client"
 
 export type JwtRole = "USER" | "ADMIN" | "EMPLOYEE"
 
-export type EmployeeRole =
-  | "ILUMINACAO"
-  | "BURACOS"
-  | "LIXO"
-  | "FISCALIZACAO"
-  | "ADMIN"
+/** Categorias do model Case */
+export type AllowedCategory =
+  | "ILUMINACAO_PUBLICA"
+  | "BURACO_NA_VIA"
+  | "COLETA_DE_LIXO"
+  | "OBSTRUCAO_DE_CALCADA"
+  | "VAZAMENTO_DE_AGUA"
+  | "OUTROS"
 
-export type AuthUser = {
-  id: string
-  name: string | null
-  email: string
-  role: JwtRole
-  employeeRole?: EmployeeRole | null
-}
+/** Quem está autenticado (pode ser User ou Employee) */
+export type AuthActor =
+  | {
+      kind: "USER"
+      id: string
+      name: string | null
+      email: string | null
+      role: "USER" | "ADMIN"
+    }
+  | {
+      kind: "EMPLOYEE"
+      id: string
+      name: string | null
+      employeeCode: number
+      cpf: string
+      employeeRole: EmployeeRole
+      isActive: boolean
+      role: "EMPLOYEE"
+    }
 
 type JwtPayload = {
   sub?: string
@@ -36,14 +51,11 @@ function getJwtSecretKey() {
 function cleanToken(raw: string) {
   let t = (raw ?? "").trim()
 
-  // remove aspas se veio stringificada
   if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
     t = t.slice(1, -1).trim()
   }
 
-  // se alguém salvou "Bearer xxx" como token
   t = t.replace(/^Bearer\s+/i, "").trim()
-
   return t
 }
 
@@ -88,55 +100,116 @@ export async function verifyToken(token: string) {
   return { userId, role, employeeRole }
 }
 
-export async function getAuthUser(req: Request): Promise<AuthUser | null> {
+/**
+ * ✅ Resolve o "ator" autenticado:
+ * - USER/ADMIN -> prisma.user
+ * - EMPLOYEE   -> prisma.employee
+ */
+export async function getAuthActor(req: Request): Promise<AuthActor | null> {
   const token = getBearerToken(req)
   if (!token) return null
 
   try {
-    // ✅ pega role e employeeRole do token
-    const { userId, role: tokenRole, employeeRole } = await verifyToken(token)
+    const { userId, role, employeeRole } = await verifyToken(token)
 
-    const user = await prisma.user.findUnique({
+    // EMPLOYEE -> tabela employee
+    if (role === "EMPLOYEE") {
+      const e = await prisma.employee.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          name: true,
+          employeeCode: true,
+          cpf: true,
+          role: true, // EmployeeRole do Prisma
+          isActive: true,
+        },
+      })
+
+      if (!e) return null
+      if (!e.isActive) return null
+
+      const finalEmpRole: EmployeeRole = employeeRole ?? e.role
+
+      return {
+        kind: "EMPLOYEE",
+        id: e.id,
+        name: e.name ?? null,
+        employeeCode: e.employeeCode,
+        cpf: e.cpf,
+        employeeRole: finalEmpRole,
+        isActive: e.isActive,
+        role: "EMPLOYEE",
+      }
+    }
+
+    // USER/ADMIN -> tabela user
+    const u = await prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        // ✅ se você tiver employeeRole no schema, pode adicionar aqui:
-        // employeeRole: true,
-      },
+      select: { id: true, name: true, email: true, role: true },
     })
+    if (!u) return null
 
-    if (!user?.email) return null
+    const dbRole = (u.role as JwtRole) ?? role
+    const finalRole: "USER" | "ADMIN" = dbRole === "ADMIN" ? "ADMIN" : "USER"
 
     return {
-      id: user.id,
-      name: user.name ?? null,
-      email: user.email,
-      // ✅ mantém o que já funciona: role do DB, com fallback do token
-      role: ((user.role as JwtRole) ?? tokenRole) as JwtRole,
-      // ✅ IMPORTANTÍSSIMO: funcionário precisa disso pra filtrar permissões
-      employeeRole: employeeRole ?? null,
-      // se tiver no schema e quiser priorizar DB:
-      // employeeRole: (user.employeeRole as EmployeeRole) ?? employeeRole ?? null,
+      kind: "USER",
+      id: u.id,
+      name: u.name ?? null,
+      email: u.email ?? null,
+      role: finalRole,
     }
   } catch (err) {
-    console.error("getAuthUser failed:", err)
+    console.error("getAuthActor failed:", err)
     return null
   }
 }
 
-export async function requireAuth(req: Request): Promise<AuthUser> {
-  const u = await getAuthUser(req)
-  if (!u) throw new Error("UNAUTHORIZED")
-  return u
+/** Atalho se você quiser exigir login */
+export async function requireAuthActor(req: Request): Promise<AuthActor> {
+  const a = await getAuthActor(req)
+  if (!a) throw new Error("UNAUTHORIZED")
+  return a
 }
 
-export function isAdmin(u: AuthUser) {
-  return u.role === "ADMIN"
+/**
+ * ✅ Mapeia cargo do funcionário -> categorias que ele pode ver
+ *
+ * Como no seu banco o cargo parece ser algo tipo "ILUMINACAO_PUBLICA",
+ * então a permissão pode ser 1:1 com a categoria.
+ */
+export function allowedCategoriesForEmployee(role: EmployeeRole): AllowedCategory[] {
+  const r = String(role)
+
+  // ✅ Se o enum do Prisma for igual às categorias, isso resolve tudo:
+  if (
+    r === "ILUMINACAO_PUBLICA" ||
+    r === "BURACO_NA_VIA" ||
+    r === "COLETA_DE_LIXO" ||
+    r === "OBSTRUCAO_DE_CALCADA" ||
+    r === "VAZAMENTO_DE_AGUA" ||
+    r === "OUTROS"
+  ) {
+    return [r as AllowedCategory]
+  }
+
+  // ✅ Se existir um cargo tipo ADMIN no enum do Prisma:
+  if (r === "ADMIN") {
+    return [
+      "ILUMINACAO_PUBLICA",
+      "BURACO_NA_VIA",
+      "COLETA_DE_LIXO",
+      "OBSTRUCAO_DE_CALCADA",
+      "VAZAMENTO_DE_AGUA",
+      "OUTROS",
+    ]
+  }
+
+  // fallback seguro
+  return []
 }
 
-export function isEmployee(u: AuthUser) {
-  return u.role === "EMPLOYEE"
+export function isAdminActor(a: AuthActor) {
+  return a.kind === "USER" && a.role === "ADMIN"
 }

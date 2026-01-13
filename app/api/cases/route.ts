@@ -22,17 +22,12 @@ type AllowedCategory = (typeof ALLOWED_CATEGORIES)[number]
 
 /* =========================
    Mapa cargo -> categorias
-   (ajuste como quiser)
 ========================= */
 const EMPLOYEE_PERMS: Record<EmployeeRole, AllowedCategory[]> = {
   ILUMINACAO: ["ILUMINACAO_PUBLICA"],
   BURACOS: ["BURACO_NA_VIA"],
   LIXO: ["COLETA_DE_LIXO"],
-
-  // exemplo: fiscal pega várias
   FISCALIZACAO: ["OBSTRUCAO_DE_CALCADA", "VAZAMENTO_DE_AGUA", "OUTROS"],
-
-  // se alguém tiver employeeRole ADMIN por algum motivo, deixa ver tudo
   ADMIN: [...ALLOWED_CATEGORIES],
 }
 
@@ -52,32 +47,61 @@ function getBearerToken(req: Request): string | null {
   return m?.[1]?.trim() ?? null
 }
 
-async function getAuthUser(req: Request) {
+type TokenDecoded = {
+  userId?: string
+  employeeId?: string
+  role?: JwtRole
+  employeeRole?: EmployeeRole | null
+}
+
+/**
+ * ✅ Agora suporta token de USER/ADMIN (userId) e token de EMPLOYEE (employeeId)
+ * Retorna um "actor" com infos suficientes sem quebrar o que já funciona.
+ */
+async function getAuthActor(req: Request) {
   const token = getBearerToken(req)
   if (!token) return null
 
   try {
-    const { userId, role, employeeRole } = await verifyToken(token)
+    const decoded = (await verifyToken(token)) as TokenDecoded
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        role: true,
-        email: true,
-        name: true,
-      },
-    })
+    // ====== USER/ADMIN token ======
+    if (decoded.userId) {
+      const user = await prisma.user.findUnique({
+        where: { id: decoded.userId },
+        select: { id: true, role: true, email: true, name: true },
+      })
+      if (!user) return null
 
-    if (!user) return null
-
-    return {
-      id: user.id,
-      role: (user.role as JwtRole) ?? (role as JwtRole),
-      employeeRole: (employeeRole ?? null) as EmployeeRole | null,
-      email: user.email,
-      name: user.name,
+      return {
+        kind: "user" as const,
+        id: user.id,
+        role: (user.role as JwtRole) ?? (decoded.role as JwtRole),
+        employeeRole: (decoded.employeeRole ?? null) as EmployeeRole | null,
+        email: user.email,
+        name: user.name,
+      }
     }
+
+    // ====== EMPLOYEE token ======
+    if (decoded.employeeId) {
+      const employee = await prisma.employee.findUnique({
+        where: { id: decoded.employeeId },
+        select: { id: true, isActive: true, role: true, name: true },
+      })
+      if (!employee || !employee.isActive) return null
+
+      return {
+        kind: "employee" as const,
+        id: employee.id,
+        role: "EMPLOYEE" as JwtRole,
+        employeeRole: (employee.role as EmployeeRole) ?? (decoded.employeeRole ?? null),
+        email: null as string | null,
+        name: employee.name,
+      }
+    }
+
+    return null
   } catch (err) {
     console.error("verifyToken failed:", err)
     return null
@@ -103,11 +127,11 @@ function getErrorInfo(err: unknown): { message?: string; code?: string } {
 ========================= */
 export async function GET(req: Request) {
   try {
-    const user = await getAuthUser(req)
-    if (!user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+    const actor = await getAuthActor(req)
+    if (!actor) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
 
-    // ✅ ADMIN vê tudo (igual antes)
-    if (user.role === "ADMIN") {
+    // ✅ ADMIN vê tudo
+    if (actor.role === "ADMIN") {
       const items = await prisma.case.findMany({
         orderBy: { createdAt: "desc" },
         take: 100,
@@ -116,13 +140,12 @@ export async function GET(req: Request) {
           user: { select: { id: true, name: true, email: true } },
         },
       })
-
       return NextResponse.json(items, { status: 200 })
     }
 
-    // ✅ EMPLOYEE vê só a categoria do cargo
-    if (user.role === "EMPLOYEE") {
-      const empRole = user.employeeRole
+    // ✅ EMPLOYEE vê só o permitido pelo cargo
+    if (actor.role === "EMPLOYEE") {
+      const empRole = actor.employeeRole
 
       if (!empRole) {
         return NextResponse.json({ error: "Funcionário sem cargo definido" }, { status: 403 })
@@ -146,7 +169,7 @@ export async function GET(req: Request) {
       return NextResponse.json(items, { status: 200 })
     }
 
-    // ✅ USER continua sem acesso (não quebra o fluxo atual)
+    // ✅ USER continua sem acesso (não quebra)
     return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
   } catch (err) {
     console.error("GET /api/cases error:", err)
@@ -156,12 +179,17 @@ export async function GET(req: Request) {
 
 /* =========================
    POST /api/cases
-   (mantém como estava: qualquer logado cria)
+   ✅ Mantém funcionando para USER/ADMIN
+   ❌ EMPLOYEE não cria (evita quebrar: case.userId precisa de user)
 ========================= */
 export async function POST(req: Request) {
   try {
-    const user = await getAuthUser(req)
-    if (!user) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+    const actor = await getAuthActor(req)
+    if (!actor) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+
+    if (actor.role === "EMPLOYEE") {
+      return NextResponse.json({ error: "Funcionário não pode criar ocorrência" }, { status: 403 })
+    }
 
     const body: unknown = await req.json()
     const b = (body ?? {}) as Record<string, unknown>
@@ -194,7 +222,7 @@ export async function POST(req: Request) {
         address,
         latitude: toDecimal(b.latitude),
         longitude: toDecimal(b.longitude),
-        userId: user.id,
+        userId: actor.id, // ✅ aqui é USER/ADMIN id
         ...(photoUrl ? { photos: { create: { url: photoUrl, kind: "REPORT" } } } : {}),
       },
       include: {

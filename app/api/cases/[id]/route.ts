@@ -15,11 +15,13 @@ type JwtEmployeePayload = { employeeId: string }
 type JwtPayload = JwtUserPayload | JwtEmployeePayload
 
 function isEmployeePayload(p: JwtPayload): p is JwtEmployeePayload {
-  return "employeeId" in p && typeof p.employeeId === "string" && p.employeeId.length > 0
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return "employeeId" in p && typeof (p as any).employeeId === "string" && (p as any).employeeId.length > 0
 }
 
 function isUserPayload(p: JwtPayload): p is JwtUserPayload {
-  return "userId" in p && typeof p.userId === "string" && p.userId.length > 0
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return "userId" in p && typeof (p as any).userId === "string" && (p as any).userId.length > 0
 }
 
 function getBearerToken(req: Request): string | null {
@@ -46,9 +48,20 @@ async function getAuthUser(req: Request) {
   }
 }
 
+/**
+ * ✅ aceita status em:
+ * - "RECEBIDA", "EM_ANDAMENTO", "AGUARDANDO_ATUALIZACAO", "CONCLUIDA"
+ * - "received", "progress", "done" (do app)
+ */
 function parseStatus(input: unknown): CaseStatus | null {
   const s = String(input ?? "").trim().toUpperCase()
 
+  // Do app (não quebra o que já funcionava)
+  if (s === "RECEIVED") return CaseStatus.RECEBIDA
+  if (s === "PROGRESS") return CaseStatus.EM_ANDAMENTO
+  if (s === "DONE") return CaseStatus.CONCLUIDA
+
+  // Do backend / Prisma
   if (s === "RECEBIDA") return CaseStatus.RECEBIDA
   if (s === "EM_ANDAMENTO") return CaseStatus.EM_ANDAMENTO
   if (s === "AGUARDANDO_ATUALIZACAO") return CaseStatus.AGUARDANDO_ATUALIZACAO
@@ -103,9 +116,9 @@ export async function GET(req: Request, context: RouteContext) {
 
 /**
  * ✅ PATCH /api/cases/[id]
- * - Somente FUNCIONÁRIO
+ * - FUNCIONÁRIO (como já era) OU ADMIN
  * - Atualiza status + cria CaseEvent
- * - Regras:
+ * - Regras (mantidas):
  *   - EM_ANDAMENTO: pode message, NÃO pode photoUrl
  *   - CONCLUIDA: photoUrl OBRIGATÓRIO
  */
@@ -118,17 +131,39 @@ export async function PATCH(req: Request, context: RouteContext) {
 
     const payload = (await verifyToken(token)) as JwtPayload
 
-    if (!isEmployeePayload(payload)) {
-      return NextResponse.json({ error: "Apenas funcionário pode atualizar" }, { status: 403 })
+    // ✅ mantém funcionário funcionando e adiciona admin
+    const actor = {
+      kind: "unknown" as "employee" | "admin" | "unknown",
+      employeeId: null as string | null,
+      userId: null as string | null,
     }
 
-    const employee = await prisma.employee.findUnique({
-      where: { id: payload.employeeId },
-      select: { id: true, isActive: true, role: true, name: true },
-    })
+    if (isEmployeePayload(payload)) {
+      const employee = await prisma.employee.findUnique({
+        where: { id: payload.employeeId },
+        select: { id: true, isActive: true },
+      })
 
-    if (!employee || !employee.isActive) {
-      return NextResponse.json({ error: "Funcionário inválido/inativo" }, { status: 403 })
+      if (!employee || !employee.isActive) {
+        return NextResponse.json({ error: "Funcionário inválido/inativo" }, { status: 403 })
+      }
+
+      actor.kind = "employee"
+      actor.employeeId = employee.id
+    } else if (isUserPayload(payload)) {
+      const user = await prisma.user.findUnique({
+        where: { id: payload.userId },
+        select: { id: true, role: true },
+      })
+
+      if (!user || user.role !== "ADMIN") {
+        return NextResponse.json({ error: "Apenas ADMIN ou funcionário pode atualizar" }, { status: 403 })
+      }
+
+      actor.kind = "admin"
+      actor.userId = user.id
+    } else {
+      return NextResponse.json({ error: "Token inválido" }, { status: 401 })
     }
 
     const { id } = await context.params
@@ -137,12 +172,10 @@ export async function PATCH(req: Request, context: RouteContext) {
       return NextResponse.json({ error: "ID inválido" }, { status: 400 })
     }
 
-    // body tipado
+    // ✅ seu handler lê JSON — mantém isso pra não quebrar
     const bodyUnknown: unknown = await req.json().catch(() => ({}))
-    const body = (typeof bodyUnknown === "object" && bodyUnknown !== null ? bodyUnknown : {}) as Record<
-      string,
-      unknown
-    >
+    const body =
+      (typeof bodyUnknown === "object" && bodyUnknown !== null ? bodyUnknown : {}) as Record<string, unknown>
 
     const nextStatus = parseStatus(body.status)
     const message = typeof body.message === "string" ? body.message.trim() : null
@@ -152,7 +185,7 @@ export async function PATCH(req: Request, context: RouteContext) {
       return NextResponse.json({ error: "Status inválido" }, { status: 400 })
     }
 
-    // ✅ regras de imagem
+    // ✅ regras de imagem (mantidas)
     if (nextStatus === CaseStatus.EM_ANDAMENTO && photoUrl) {
       return NextResponse.json({ error: "Imagem não permitida em andamento" }, { status: 400 })
     }
@@ -166,17 +199,18 @@ export async function PATCH(req: Request, context: RouteContext) {
         data: { status: nextStatus },
       })
 
+      // ✅ mantém employeeId como antes
+      // (se você quiser rastrear admin também, depois a gente adiciona userId no CaseEvent)
       const event = await tx.caseEvent.create({
         data: {
           caseId,
           status: nextStatus,
           message,
           photoUrl,
-          employeeId: employee.id,
+          employeeId: actor.kind === "employee" ? actor.employeeId : null,
         },
       })
 
-      // ✅ se concluir, salva também como foto de UPDATE
       if (nextStatus === CaseStatus.CONCLUIDA && photoUrl) {
         await tx.casePhoto.create({
           data: {

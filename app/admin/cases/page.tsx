@@ -35,7 +35,7 @@ type CaseItem = {
   createdAt: string
   user?: { id: string; name: string | null; email: string } | null
   photos?: { id: string; url: string; kind: "REPORT" | "UPDATE"; createdAt: string }[]
-  events?: CaseEventItem[] // ✅ histórico
+  events?: CaseEventItem[]
 }
 
 const CATEGORY_LABEL: Record<CaseCategory, string> = {
@@ -137,12 +137,8 @@ function getLastEvent(c: CaseItem) {
   return sorted[0] ?? null
 }
 
-/* =========================
-   Modal de imagem fullscreen
-========================= */
 function ImageModal({ src, onClose }: { src: string; onClose: () => void }) {
   if (!src) return null
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
@@ -154,7 +150,6 @@ function ImageModal({ src, onClose }: { src: string; onClose: () => void }) {
       >
         ✕ Fechar
       </button>
-
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}
@@ -162,6 +157,49 @@ function ImageModal({ src, onClose }: { src: string; onClose: () => void }) {
         className="max-h-[95vh] max-w-[95vw] rounded-lg object-contain shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       />
+    </div>
+  )
+}
+
+function ConfirmDeleteModal({
+  protocol,
+  onCancel,
+  onConfirm,
+  loading,
+}: {
+  protocol: string
+  onCancel: () => void
+  onConfirm: () => void
+  loading: boolean
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+        <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+          Excluir ocorrência?
+        </h3>
+        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+          Você está prestes a excluir a ocorrência <b>{protocol}</b>. Essa ação é permanente.
+        </p>
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          >
+            Cancelar
+          </button>
+
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+          >
+            {loading ? "Excluindo..." : "Excluir"}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -177,8 +215,10 @@ export default function CasesPage() {
   const [category, setCategory] = useState<CaseCategory | "ALL">("ALL")
   const [status, setStatus] = useState<CaseStatus | "ALL">("ALL")
 
-  // ✅ imagem em tela cheia
   const [openImage, setOpenImage] = useState<string | null>(null)
+
+  const [deleteTarget, setDeleteTarget] = useState<CaseItem | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -215,6 +255,43 @@ export default function CasesPage() {
       else setError("Erro inesperado ao carregar")
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function deleteCase(caseId: string) {
+    const token = getToken()
+    if (!token) {
+      router.replace("/admin/auth?next=/cases")
+      return
+    }
+
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/cases/${caseId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      })
+
+      const data = await res.json().catch(() => ({}))
+
+      if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem("token")
+        localStorage.removeItem("accessToken")
+        alert(data?.error || "Sem acesso. Faça login novamente.")
+        router.replace("/admin/auth?next=/cases")
+        return
+      }
+
+      if (!res.ok) throw new Error(data?.error || "Erro ao excluir")
+
+      setItems((prev) => prev.filter((x) => x.id !== caseId))
+      setDeleteTarget(null)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Erro ao excluir"
+      alert(msg)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -318,7 +395,6 @@ export default function CasesPage() {
             </select>
           </div>
 
-          {/* Conteúdo */}
           <div className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
             <div className="flex items-center justify-between border-b border-zinc-200 p-4 dark:border-zinc-800">
               <p className="text-sm text-zinc-600 dark:text-zinc-400">
@@ -349,16 +425,14 @@ export default function CasesPage() {
                     <th className="px-4 py-3">Endereço</th>
                     <th className="px-4 py-3">Usuário</th>
                     <th className="px-4 py-3">Data</th>
+                    <th className="px-4 py-3">Ações</th>
                   </tr>
                 </thead>
 
                 <tbody>
                   {!loading && filtered.length === 0 && (
                     <tr>
-                      <td
-                        colSpan={8}
-                        className="px-4 py-10 text-center text-zinc-500 dark:text-zinc-400"
-                      >
+                      <td colSpan={9} className="px-4 py-10 text-center text-zinc-500 dark:text-zinc-400">
                         Nenhum caso encontrado.
                       </td>
                     </tr>
@@ -370,11 +444,7 @@ export default function CasesPage() {
                     const last = getLastEvent(c)
 
                     return (
-                      <tr
-                        key={c.id}
-                        className="border-t border-zinc-200 align-top dark:border-zinc-800"
-                      >
-                        {/* Foto do REPORT */}
+                      <tr key={c.id} className="border-t border-zinc-200 align-top dark:border-zinc-800">
                         <td className="px-4 py-3">
                           {photo ? (
                             // eslint-disable-next-line @next/next/no-img-element
@@ -390,10 +460,8 @@ export default function CasesPage() {
                         </td>
 
                         <td className="px-4 py-3 font-semibold">{c.protocol}</td>
-
                         <td className="px-4 py-3">{CATEGORY_LABEL[c.category] ?? c.category}</td>
 
-                        {/* Status atual */}
                         <td className="px-4 py-3">
                           <span
                             className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${statusBadgeClass(
@@ -404,7 +472,6 @@ export default function CasesPage() {
                           </span>
                         </td>
 
-                        {/* Atualizações bonitas */}
                         <td className="px-4 py-3">
                           <div className="min-w-[280px] max-w-[380px]">
                             <div className="flex flex-wrap items-center gap-2">
@@ -451,9 +518,7 @@ export default function CasesPage() {
                                     {last.message}
                                   </div>
                                 ) : (
-                                  <div className="mt-2 text-zinc-500 dark:text-zinc-400">
-                                    Sem mensagem.
-                                  </div>
+                                  <div className="mt-2 text-zinc-500 dark:text-zinc-400">Sem mensagem.</div>
                                 )}
 
                                 {last.photoUrl ? (
@@ -467,59 +532,6 @@ export default function CasesPage() {
                                 ) : null}
                               </div>
                             ) : null}
-
-                            {c.events && c.events.length > 1 ? (
-                              <details className="mt-2">
-                                <summary className="cursor-pointer select-none text-xs font-semibold text-blue-700 hover:underline dark:text-blue-300">
-                                  Ver histórico ({c.events.length})
-                                </summary>
-
-                                <div className="mt-2 space-y-2">
-                                  {[...c.events]
-                                    .sort(
-                                      (a, b) =>
-                                        new Date(b.createdAt).getTime() -
-                                        new Date(a.createdAt).getTime()
-                                    )
-                                    .slice(0, 8)
-                                    .map((ev) => (
-                                      <div
-                                        key={ev.id}
-                                        className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950"
-                                      >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <div className="flex items-center gap-2">
-                                            <span className={`h-2 w-2 rounded-full ${dotClass(ev.status)}`} />
-                                            <span className="text-xs font-semibold">
-                                              IP {ev.employee?.employeeCode ?? "—"} →{" "}
-                                              {STATUS_LABEL[ev.status] ?? ev.status}
-                                            </span>
-                                          </div>
-                                          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                                            {formatDateTimeBR(ev.createdAt)}
-                                          </span>
-                                        </div>
-
-                                        {ev.message ? (
-                                          <div className="mt-1 whitespace-pre-line text-xs text-zinc-600 dark:text-zinc-300">
-                                            {ev.message}
-                                          </div>
-                                        ) : null}
-
-                                        {ev.photoUrl ? (
-                                          // eslint-disable-next-line @next/next/no-img-element
-                                          <img
-                                            src={ev.photoUrl}
-                                            alt="foto"
-                                            onClick={() => setOpenImage(ev.photoUrl!)}
-                                            className="mt-2 h-20 w-full cursor-zoom-in rounded-lg object-cover transition hover:opacity-80"
-                                          />
-                                        ) : null}
-                                      </div>
-                                    ))}
-                                </div>
-                              </details>
-                            ) : null}
                           </div>
                         </td>
 
@@ -529,12 +541,19 @@ export default function CasesPage() {
 
                         <td className="px-4 py-3">
                           <div className="text-zinc-900 dark:text-zinc-100">{c.user?.name ?? "—"}</div>
-                          <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                            {c.user?.email ?? ""}
-                          </div>
+                          <div className="text-xs text-zinc-500 dark:text-zinc-400">{c.user?.email ?? ""}</div>
                         </td>
 
                         <td className="px-4 py-3">{formatDateBR(c.createdAt)}</td>
+
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => setDeleteTarget(c)}
+                            className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200 dark:hover:bg-red-950/60"
+                          >
+                            Excluir
+                          </button>
+                        </td>
                       </tr>
                     )
                   })}
@@ -549,8 +568,16 @@ export default function CasesPage() {
         </div>
       </div>
 
-      {/* ✅ Modal fullscreen */}
       {openImage && <ImageModal src={openImage} onClose={() => setOpenImage(null)} />}
+
+      {deleteTarget && (
+        <ConfirmDeleteModal
+          protocol={deleteTarget.protocol}
+          loading={deleting}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => deleteCase(deleteTarget.id)}
+        />
+      )}
     </>
   )
 }

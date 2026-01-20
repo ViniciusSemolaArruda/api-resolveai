@@ -1,21 +1,23 @@
 // app/api/cases/[id]/route.ts
 import { NextResponse } from "next/server"
 import { prisma } from "../../../../lib/prisma"
-import type { CaseStatus, CaseCategory, EmployeeRole } from "@prisma/client"
+import type { CaseStatus, CaseCategory } from "@prisma/client"
 import { getAuthActor, isAdminActor, allowedCategoriesForEmployee } from "../../../../lib/auth"
 
 export const runtime = "nodejs"
 
-function isAllowedToSeeCase(actor: Awaited<ReturnType<typeof getAuthActor>>, foundCategory: CaseCategory, ownerId: string | null) {
+type Actor = Awaited<ReturnType<typeof getAuthActor>>
+
+function isAllowedToSeeCase(actor: Actor, foundCategory: CaseCategory, ownerId: string | null) {
   if (!actor) return false
 
-  // ADMIN vê tudo
+  // ✅ ADMIN vê tudo
   if (isAdminActor(actor)) return true
 
-  // USER dono do caso
-  if (actor.kind === "USER") return ownerId && actor.id === ownerId
+  // ✅ USER dono do caso
+  if (actor.kind === "USER") return !!ownerId && actor.id === ownerId
 
-  // EMPLOYEE só categoria do cargo
+  // ✅ EMPLOYEE só categoria do cargo
   const allowed = allowedCategoriesForEmployee(actor.employeeRole)
   return allowed.includes(foundCategory)
 }
@@ -39,7 +41,14 @@ export async function GET(req: Request, context: { params: Promise<{ id: string 
       where: { id: caseId },
       include: {
         photos: { orderBy: { createdAt: "desc" } },
-        events: { orderBy: { createdAt: "asc" } },
+        events: {
+          orderBy: { createdAt: "asc" },
+          include: {
+            employee: { select: { id: true, employeeCode: true, name: true, role: true } },
+            author: { select: { id: true, name: true, email: true } },
+          },
+        },
+        user: { select: { id: true, name: true, email: true } },
       },
     })
 
@@ -94,11 +103,11 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
 
     if (!found) return NextResponse.json({ error: "Ocorrência não encontrada" }, { status: 404 })
 
-    // permissão
+    // ✅ permissão
     const can = isAllowedToSeeCase(actor, found.category, found.userId ?? null)
     if (!can) return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
 
-    // normaliza status
+    // ✅ normaliza status
     const rawStatus = String(body.status ?? "").trim().toUpperCase()
     const nextStatus =
       rawStatus === "RECEBIDA" ||
@@ -123,7 +132,6 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
         ...(typeof nextDescription === "string" && nextDescription.length > 0
           ? { description: nextDescription }
           : {}),
-        // cria foto UPDATE se veio photoUrl
         ...(photoUrl
           ? {
               photos: {
@@ -131,13 +139,11 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
               },
             }
           : {}),
-        // cria evento sempre que patch ocorrer
         events: {
           create: {
             status: (nextStatus ?? found.status) as CaseStatus,
             message: message || null,
             photoUrl: photoUrl || null,
-
             authorId: actor.kind === "USER" ? actor.id : null,
             employeeId: actor.kind === "EMPLOYEE" ? actor.id : null,
           },
@@ -145,7 +151,14 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
       },
       include: {
         photos: { orderBy: { createdAt: "desc" } },
-        events: { orderBy: { createdAt: "asc" } },
+        events: {
+          orderBy: { createdAt: "asc" },
+          include: {
+            employee: { select: { id: true, employeeCode: true, name: true, role: true } },
+            author: { select: { id: true, name: true, email: true } },
+          },
+        },
+        user: { select: { id: true, name: true, email: true } },
       },
     })
 
@@ -153,5 +166,45 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   } catch (err) {
     console.error("PATCH /api/cases/[id] error:", err)
     return NextResponse.json({ error: "Erro ao atualizar ocorrência" }, { status: 500 })
+  }
+}
+
+/**
+ * ✅ DELETE /api/cases/[id]
+ * - Somente ADMIN apaga do banco
+ * Remove filhos (events/photos) + case, em transação
+ */
+export async function DELETE(req: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const actor = await getAuthActor(req)
+    if (!actor) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+
+    // ✅ somente admin
+    if (!isAdminActor(actor)) {
+      return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
+    }
+
+    const { id } = await context.params
+    const caseId = String(id ?? "").trim()
+    if (!caseId) return NextResponse.json({ error: "ID inválido" }, { status: 400 })
+
+    const found = await prisma.case.findUnique({
+      where: { id: caseId },
+      select: { id: true },
+    })
+
+    if (!found) return NextResponse.json({ error: "Ocorrência não encontrada" }, { status: 404 })
+
+    // ✅ apaga tudo ligado ao case
+    await prisma.$transaction([
+      prisma.caseEvent.deleteMany({ where: { caseId } }),
+      prisma.casePhoto.deleteMany({ where: { caseId } }),
+      prisma.case.delete({ where: { id: caseId } }),
+    ])
+
+    return NextResponse.json({ ok: true }, { status: 200 })
+  } catch (err) {
+    console.error("DELETE /api/cases/[id] error:", err)
+    return NextResponse.json({ error: "Erro ao excluir ocorrência" }, { status: 500 })
   }
 }

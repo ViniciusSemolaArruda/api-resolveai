@@ -31,34 +31,44 @@ function toDecimal(v: unknown) {
 /* =========================
    GET /api/cases
    ADMIN (user ADMIN): tudo
-   EMPLOYEE: filtrado por cargo (e já vem com "events" p/ mostrar IP, data, msg e foto)
-   USER: 403 (mantém seu comportamento atual)
+   EMPLOYEE: filtrado por cargo
+   USER: 403 (mantém)
 ========================= */
 export async function GET(req: Request) {
   try {
     const actor = await getAuthActor(req)
     if (!actor) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
 
+    const baseInclude = {
+      // ✅ aqui está a correção:
+      // Sempre trazer a foto ORIGINAL do usuário (REPORT) para a coluna "Foto"
+      photos: {
+        where: { kind: "REPORT" as const },
+        orderBy: { createdAt: "desc" as const },
+        take: 1,
+      },
+
+      user: { select: { id: true, name: true, email: true } },
+
+      // ✅ atualizações (inclui foto do funcionário via events.photoUrl)
+      events: {
+        orderBy: { createdAt: "desc" as const },
+        take: 10,
+        include: {
+          employee: { select: { id: true, employeeCode: true, name: true, role: true } },
+          author: { select: { id: true, name: true, email: true } },
+        },
+      },
+    }
+
     // ✅ ADMIN (user ADMIN) vê tudo
     if (actor.kind === "USER" && actor.role === "ADMIN") {
       const items = await prisma.case.findMany({
         orderBy: { createdAt: "desc" },
         take: 100,
-        include: {
-          photos: { orderBy: { createdAt: "desc" }, take: 1 },
-          user: { select: { id: true, name: true, email: true } },
-
-          // ✅ histórico de atualizações (quem mudou, pra qual status, quando, msg, foto)
-          events: {
-            orderBy: { createdAt: "desc" },
-            take: 10,
-            include: {
-              employee: { select: { id: true, employeeCode: true, name: true, role: true } },
-              author: { select: { id: true, name: true, email: true } },
-            },
-          },
-        },
+        include: baseInclude,
       })
+
       return NextResponse.json(items, { status: 200 })
     }
 
@@ -73,26 +83,13 @@ export async function GET(req: Request) {
         where: { category: { in: allowed } },
         orderBy: { createdAt: "desc" },
         take: 100,
-        include: {
-          photos: { orderBy: { createdAt: "desc" }, take: 1 },
-          user: { select: { id: true, name: true, email: true } },
-
-          // ✅ histórico de atualizações também pro funcionário
-          events: {
-            orderBy: { createdAt: "desc" },
-            take: 10,
-            include: {
-              employee: { select: { id: true, employeeCode: true, name: true, role: true } },
-              author: { select: { id: true, name: true, email: true } },
-            },
-          },
-        },
+        include: baseInclude,
       })
 
       return NextResponse.json(items, { status: 200 })
     }
 
-    // ✅ USER continua sem acesso (não quebra o que já funciona)
+    // ✅ USER continua sem acesso
     return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
   } catch (err) {
     console.error("GET /api/cases error:", err)
@@ -102,16 +99,12 @@ export async function GET(req: Request) {
 
 /* =========================
    POST /api/cases
-   (mantém como estava: qualquer logado cria)
-   - USER/ADMIN cria normal (userId do user)
-   - EMPLOYEE: bloqueado por padrão (se quiser permitir depois, eu mudo)
 ========================= */
 export async function POST(req: Request) {
   try {
     const actor = await getAuthActor(req)
     if (!actor) return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
 
-    // 🔒 por padrão: employee não cria ocorrência
     if (actor.kind === "EMPLOYEE") {
       return NextResponse.json({ error: "Funcionário não pode criar ocorrência" }, { status: 403 })
     }
@@ -147,14 +140,16 @@ export async function POST(req: Request) {
         address,
         latitude: toDecimal(b.latitude),
         longitude: toDecimal(b.longitude),
-
-        // ✅ cidadão/admin criando -> salva dono do case
         userId: actor.id,
-
         ...(photoUrl ? { photos: { create: { url: photoUrl, kind: "REPORT" } } } : {}),
       },
       include: {
-        photos: { orderBy: { createdAt: "desc" }, take: 1 },
+        // ✅ mantém só a foto do REPORT aqui também (fica consistente)
+        photos: {
+          where: { kind: "REPORT" },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
       },
     })
 

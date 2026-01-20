@@ -137,6 +137,14 @@ function getLastEvent(c: CaseItem) {
   return sorted[0] ?? null
 }
 
+/** ✅ Foto do usuário (REPORT) — SEMPRE essa na coluna "Foto" */
+function getReportPhotoUrl(c: CaseItem) {
+  return c.photos?.find((p) => p.kind === "REPORT")?.url || null
+}
+
+/* =========================
+   Modal de imagem fullscreen
+========================= */
 function ImageModal({ src, onClose }: { src: string; onClose: () => void }) {
   if (!src) return null
   return (
@@ -150,6 +158,7 @@ function ImageModal({ src, onClose }: { src: string; onClose: () => void }) {
       >
         ✕ Fechar
       </button>
+
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}
@@ -204,6 +213,223 @@ function ConfirmDeleteModal({
   )
 }
 
+/* =========================
+   Timeline completa (conteúdo)
+========================= */
+function EventsTimeline({
+  events,
+  onOpenImage,
+}: {
+  events?: CaseEventItem[]
+  onOpenImage: (src: string) => void
+}) {
+  if (!events || events.length === 0) {
+    return <div className="text-xs text-zinc-500 dark:text-zinc-400">Sem atualizações.</div>
+  }
+
+  const sorted = [...events].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  )
+
+  return (
+    <div className="space-y-2">
+      {sorted.map((ev) => (
+        <div key={ev.id} className="relative pl-5">
+          <div className="absolute left-[6px] top-0 h-full w-px bg-zinc-200 dark:bg-zinc-800" />
+          <div
+            className={`absolute left-1 top-2 h-2.5 w-2.5 rounded-full ring-2 ring-white dark:ring-zinc-950 ${dotClass(
+              ev.status
+            )}`}
+          />
+
+          <div className="rounded-xl border border-zinc-200 bg-white p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">{formatDateTimeBR(ev.createdAt)}</span>
+
+                <span className="text-zinc-500 dark:text-zinc-400">•</span>
+
+                <span className="inline-flex items-center rounded-full bg-zinc-50 px-2 py-0.5 font-semibold text-zinc-800 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-800">
+                  IP {ev.employee?.employeeCode ?? "—"}
+                </span>
+
+                <span
+                  className={`inline-flex items-center rounded-full px-2 py-0.5 font-semibold ring-1 ${statusChipClass(
+                    ev.status
+                  )}`}
+                >
+                  {STATUS_LABEL[ev.status] ?? ev.status}
+                </span>
+              </div>
+
+              {ev.employee?.name ? (
+                <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  {ev.employee.name}
+                </span>
+              ) : null}
+            </div>
+
+            {ev.message ? (
+              <div className="mt-2 whitespace-pre-line text-zinc-600 dark:text-zinc-300">
+                {ev.message}
+              </div>
+            ) : null}
+
+            {/* ✅ Foto do funcionário (atualização) fica aqui */}
+            {ev.photoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={ev.photoUrl}
+                alt="foto atualização"
+                onClick={() => onOpenImage(ev.photoUrl!)}
+                className="mt-2 h-24 w-full cursor-zoom-in rounded-lg object-cover ring-1 ring-zinc-200 transition hover:opacity-80 dark:ring-zinc-800"
+              />
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/* =========================
+   Popover de Atualizações
+   ✅ abre e só fecha no botão
+========================= */
+function UpdatesPopover({
+  caseId,
+  currentStatus,
+  events,
+  lastEvent,
+  onOpenImage,
+  openId,
+  setOpenId,
+}: {
+  caseId: string
+  currentStatus: CaseStatus
+  events?: CaseEventItem[]
+  lastEvent: CaseEventItem | null
+  onOpenImage: (src: string) => void
+  openId: string | null
+  setOpenId: (id: string | null) => void
+}) {
+  const isOpen = openId === caseId
+  const count = events?.length ?? 0
+
+  function open() {
+    if (!isOpen) setOpenId(caseId)
+  }
+  function close() {
+    if (isOpen) setOpenId(null)
+  }
+
+  return (
+    <div className="relative">
+      <div className="min-w-[320px] max-w-[520px]">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusChipClass(
+              currentStatus
+            )}`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${dotClass(currentStatus)}`} />
+            {STATUS_LABEL[currentStatus] ?? currentStatus}
+          </span>
+
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            • {count ? `${count} atualização(ões)` : "0 atualizações"}
+          </span>
+
+          {/* ✅ único toggle */}
+          <button
+            type="button"
+            onClick={() => (isOpen ? close() : open())}
+            className="ml-auto inline-flex items-center text-xs font-semibold text-blue-700 hover:underline dark:text-blue-300"
+          >
+            {isOpen ? "Fechar histórico" : "Abrir histórico"}
+          </button>
+        </div>
+
+        {/* Preview do último evento (clicar abre, mas não fecha) */}
+        {lastEvent ? (
+          <div
+            className="mt-2 rounded-xl border border-zinc-200 bg-zinc-50 p-2.5 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-200"
+            onClick={() => open()}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") open()
+            }}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">{formatDateTimeBR(lastEvent.createdAt)}</span>
+              <span className="text-zinc-500 dark:text-zinc-400">•</span>
+              <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 font-semibold text-zinc-800 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-100 dark:ring-zinc-800">
+                IP {lastEvent.employee?.employeeCode ?? "—"}
+              </span>
+              <span
+                className={`inline-flex items-center rounded-full px-2 py-0.5 font-semibold ring-1 ${statusChipClass(
+                  lastEvent.status
+                )}`}
+              >
+                {STATUS_LABEL[lastEvent.status] ?? lastEvent.status}
+              </span>
+            </div>
+
+            {lastEvent.message ? (
+              <div className="mt-2 line-clamp-2 whitespace-pre-line text-zinc-600 dark:text-zinc-300">
+                {lastEvent.message}
+              </div>
+            ) : (
+              <div className="mt-2 text-zinc-500 dark:text-zinc-400">Sem mensagem.</div>
+            )}
+
+            {lastEvent.photoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={lastEvent.photoUrl}
+                alt="foto atualização"
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onOpenImage(lastEvent.photoUrl!)
+                }}
+                className="mt-2 h-16 w-full cursor-zoom-in rounded-lg object-cover ring-1 ring-zinc-200 transition hover:opacity-80 dark:ring-zinc-800"
+              />
+            ) : null}
+          </div>
+        ) : (
+          <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">Sem atualizações.</div>
+        )}
+      </div>
+
+      {/* ✅ NÃO tem overlay pra fechar clicando fora */}
+      {isOpen ? (
+        <div className="absolute left-0 top-full z-50 mt-2 w-[520px] max-w-[80vw]">
+          <div className="rounded-2xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+              <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                Histórico completo • {count}
+              </div>
+              <button
+                type="button"
+                onClick={close}
+                className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="max-h-[420px] overflow-auto p-4">
+              <EventsTimeline events={events} onOpenImage={onOpenImage} />
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export default function CasesPage() {
   const router = useRouter()
 
@@ -219,6 +445,8 @@ export default function CasesPage() {
 
   const [deleteTarget, setDeleteTarget] = useState<CaseItem | null>(null)
   const [deleting, setDeleting] = useState(false)
+
+  const [openUpdatesId, setOpenUpdatesId] = useState<string | null>(null)
 
   async function load() {
     setLoading(true)
@@ -432,26 +660,32 @@ export default function CasesPage() {
                 <tbody>
                   {!loading && filtered.length === 0 && (
                     <tr>
-                      <td colSpan={9} className="px-4 py-10 text-center text-zinc-500 dark:text-zinc-400">
+                      <td
+                        colSpan={9}
+                        className="px-4 py-10 text-center text-zinc-500 dark:text-zinc-400"
+                      >
                         Nenhum caso encontrado.
                       </td>
                     </tr>
                   )}
 
                   {filtered.map((c) => {
-                    const reportPhoto = c.photos?.find((p) => p.kind === "REPORT")?.url
-                    const photo = reportPhoto || c.photos?.[0]?.url
+                    // ✅ Foto da coluna sempre é a do usuário (REPORT)
+                    const reportPhoto = getReportPhotoUrl(c)
                     const last = getLastEvent(c)
 
                     return (
-                      <tr key={c.id} className="border-t border-zinc-200 align-top dark:border-zinc-800">
+                      <tr
+                        key={c.id}
+                        className="border-t border-zinc-200 align-top dark:border-zinc-800"
+                      >
                         <td className="px-4 py-3">
-                          {photo ? (
+                          {reportPhoto ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
-                              src={photo}
-                              alt="foto"
-                              onClick={() => setOpenImage(photo)}
+                              src={reportPhoto}
+                              alt="foto do usuário"
+                              onClick={() => setOpenImage(reportPhoto)}
                               className="h-12 w-12 cursor-zoom-in rounded-lg object-cover transition hover:opacity-80"
                             />
                           ) : (
@@ -473,66 +707,15 @@ export default function CasesPage() {
                         </td>
 
                         <td className="px-4 py-3">
-                          <div className="min-w-[280px] max-w-[380px]">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span
-                                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusChipClass(
-                                  c.status
-                                )}`}
-                              >
-                                <span className={`h-1.5 w-1.5 rounded-full ${dotClass(c.status)}`} />
-                                {STATUS_LABEL[c.status] ?? c.status}
-                              </span>
-
-                              {last ? (
-                                <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                                  • última {formatDateTimeBR(last.createdAt)}
-                                </span>
-                              ) : (
-                                <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                                  • sem atualizações
-                                </span>
-                              )}
-                            </div>
-
-                            {last ? (
-                              <div className="mt-2 rounded-xl border border-zinc-200 bg-zinc-50 p-2.5 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-200">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 font-semibold text-zinc-800 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-100 dark:ring-zinc-800">
-                                    IP {last.employee?.employeeCode ?? "—"}
-                                  </span>
-
-                                  <span className="text-zinc-500 dark:text-zinc-400">→</span>
-
-                                  <span
-                                    className={`inline-flex items-center rounded-full px-2 py-0.5 font-semibold ring-1 ${statusChipClass(
-                                      last.status
-                                    )}`}
-                                  >
-                                    {STATUS_LABEL[last.status] ?? last.status}
-                                  </span>
-                                </div>
-
-                                {last.message ? (
-                                  <div className="mt-2 line-clamp-3 whitespace-pre-line text-zinc-600 dark:text-zinc-300">
-                                    {last.message}
-                                  </div>
-                                ) : (
-                                  <div className="mt-2 text-zinc-500 dark:text-zinc-400">Sem mensagem.</div>
-                                )}
-
-                                {last.photoUrl ? (
-                                  // eslint-disable-next-line @next/next/no-img-element
-                                  <img
-                                    src={last.photoUrl}
-                                    alt="foto atualização"
-                                    onClick={() => setOpenImage(last.photoUrl!)}
-                                    className="mt-2 h-16 w-full cursor-zoom-in rounded-lg object-cover ring-1 ring-zinc-200 transition hover:opacity-80 dark:ring-zinc-800"
-                                  />
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </div>
+                          <UpdatesPopover
+                            caseId={c.id}
+                            currentStatus={c.status}
+                            events={c.events}
+                            lastEvent={last}
+                            onOpenImage={(src) => setOpenImage(src)}
+                            openId={openUpdatesId}
+                            setOpenId={(id) => setOpenUpdatesId(id)}
+                          />
                         </td>
 
                         <td className="px-4 py-3">
@@ -540,8 +723,12 @@ export default function CasesPage() {
                         </td>
 
                         <td className="px-4 py-3">
-                          <div className="text-zinc-900 dark:text-zinc-100">{c.user?.name ?? "—"}</div>
-                          <div className="text-xs text-zinc-500 dark:text-zinc-400">{c.user?.email ?? ""}</div>
+                          <div className="text-zinc-900 dark:text-zinc-100">
+                            {c.user?.name ?? "—"}
+                          </div>
+                          <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                            {c.user?.email ?? ""}
+                          </div>
                         </td>
 
                         <td className="px-4 py-3">{formatDateBR(c.createdAt)}</td>
